@@ -9,12 +9,16 @@ Table of Contents
 * [Latest release](#latest-release)
 * [Overview](#overview)
 * [Usage](#usage)
-    * [Enable Kernel IP forwarding](#enable-kernel-ip-forwarding)
-    * [Add required firewall rules (using nftables as an example)](#add-required-firewall-rules-using-nftables-as-an-example)
+    * [1. Enable Kernel IP forwarding](#1-enable-kernel-ip-forwarding)
+    * [2. Add required firewall rules](#2-add-required-firewall-rules)
         * [Client](#client)
+            * [Using nftables](#using-nftables)
+            * [Using iptables](#using-iptables)
         * [Server](#server)
-    * [Run Phantun binaries as non-root (Optional)](#run-phantun-binaries-as-non-root-optional)
-    * [Start](#start)
+            * [Using nftables](#using-nftables)
+            * [Using iptables](#using-iptables)
+    * [3. Run Phantun binaries as non-root (Optional)](#3-run-phantun-binaries-as-non-root-optional)
+    * [4. Start Phantun daemon](#4-start-phantun-daemon)
         * [Server](#server)
         * [Client](#client)
 * [MTU overhead](#mtu-overhead)
@@ -27,16 +31,16 @@ Table of Contents
 
 # Latest release
 
-[v0.1.0](https://github.com/dndx/phantun/releases/tag/v0.1.0)
+[v0.2.4](https://github.com/dndx/phantun/releases/tag/v0.2.4)
 
 # Overview
 
-Phanton is a project that obfuscated UDP packets into TCP connections. It aims to
+Phantun is a project that obfuscated UDP packets into TCP connections. It aims to
 achieve maximum performance with minimum processing and encapsulation overhead.
 
 It is commonly used in environments where UDP is blocked/throttled but TCP is allowed through.
 
-Phanton simply converts a stream of UDP packets into obfuscated TCP stream packets. The TCP stack
+Phantun simply converts a stream of UDP packets into obfuscated TCP stream packets. The TCP stack
 used by Phantun is designed to pass through most L3/L4 stateful/stateless firewalls/NAT
 devices. It will **not** be able to pass through L7 proxies.
 However, the advantage of this approach is that none of the common UDP over TCP performance killer
@@ -51,20 +55,49 @@ to make it pass through stateful firewall/NATs as TCP packets.
 
 # Usage
 
+For the example below, it is assumed that **Phantun Server** listens for incoming Phantun Client connections at
+port `4567` (the `--local` option for server), and it forwards UDP packets to UDP server at `127.0.0.1:1234`
+(the `--remote` option for server).
+
+It is also assumed that **Phantun Client** listens for incoming UDP packets at
+`127.0.0.1:1234` (the `--local` option for client) and connects to Phantun Server at `10.0.0.1:4567`
+(the `--remote` option for client).
+
 Phantun creates TUN interface for both the Client and Server. For Client, Phantun assigns itself the IP address
-`192.168.200.2` and for Server, it assigns `192.168.201.2`. Therefore, your Kernel must have
+`192.168.200.2` by default and for Server, it assigns `192.168.201.2` by default. Therefore, your Kernel must have
 `net.ipv4.ip_forward` enabled and setup appropriate iptables rules for NAT between your physical
 NIC address and Phantun's TUN interface address.
 
+You may customize the name of Tun interface created by Phantun and the assigned addresses. Please
+run the executable with `-h` options to see how to change them.
+
+Another way to help understand this network topology:
+
+Phantun Client is like a machine with private IP address (`192.168.200.2`) behind a router.
+In order for it to reach the Internet, you will need to SNAT the private IP address before it's traffic
+leaves the NIC.
+
+Phantun Server is like a server with private IP address (`192.168.201.2`) behind a router.
+In order to access it from the Internet, you need to `DNAT` it's listening port on the router
+and change the destination IP address to where the server is listening for incoming connections.
+
+In those cases, the machine/iptables running Phantun acts as the "router" that allows Phantun
+to communicate with outside using it's private IP addresses.
+
+As of Phantun v0.2.2, IPv6 support for UDP endpoints has been added, however Fake TCP IPv6 support
+has not been finished yet. To specify an IPv6 address, use the following format: `[::1]:1234` with
+the command line options.
+
 [Back to TOC](#table-of-contents)
 
-## Enable Kernel IP forwarding
+## 1. Enable Kernel IP forwarding
 
 Edit `/etc/sysctl.conf`, add `net.ipv4.ip_forward=1` and run `sudo sysctl -p /etc/sysctl.conf`.
 
 [Back to TOC](#table-of-contents)
 
-## Add required firewall rules (using nftables as an example)
+## 2. Add required firewall rules
+
 
 ### Client
 
@@ -72,6 +105,10 @@ Client simply need SNAT enabled on the physical interface to translate Phantun's
 one that can be used on the physical network. This can be done simply with masquerade.
 
 Note: change `eth0` to whatever actual physical interface name is
+
+[Back to TOC](#table-of-contents)
+
+#### Using nftables
 
 ```
 table inet nat {
@@ -84,12 +121,24 @@ table inet nat {
 
 [Back to TOC](#table-of-contents)
 
+#### Using iptables
+
+```
+iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+```
+
+[Back to TOC](#table-of-contents)
+
 ### Server
 
 Server needs to DNAT the TCP listening port to Phantun's TUN interface address.
 
 Note: change `eth0` to whatever actual physical interface name is and `4567` to
-actual TCP port number used by Phanton server
+actual TCP port number used by Phantun server
+
+[Back to TOC](#table-of-contents)
+
+#### Using nftables
 
 ```
 table ip nat {
@@ -102,7 +151,15 @@ table ip nat {
 
 [Back to TOC](#table-of-contents)
 
-## Run Phantun binaries as non-root (Optional)
+#### Using iptables
+
+```
+iptables -t nat -A PREROUTING -p tcp -i eth0 --dport 4567 -j DNAT --to-destination 192.168.201.2
+```
+
+[Back to TOC](#table-of-contents)
+
+## 3. Run Phantun binaries as non-root (Optional)
 
 It is ill-advised to run network facing applications as root user. Phantun can be run fully
 as non-root user with the `cap_net_admin` capability.
@@ -115,7 +172,9 @@ sudo setcap cap_net_admin=+pe phantun_client
 
 [Back to TOC](#table-of-contents)
 
-## Start
+## 4. Start Phantun daemon
+
+**Note:** Run Phantun executable with `-h` option to see full detailed options.
 
 ### Server
 
@@ -124,6 +183,12 @@ rule specified above. `127.0.0.1:1234` is the UDP Server to connect to for new c
 
 ```
 RUST_LOG=info /usr/local/bin/phantun_server --local 4567 --remote 127.0.0.1:1234
+```
+
+Or use host name with `--remote`:
+
+```
+RUST_LOG=info /usr/local/bin/phantun_server --local 4567 --remote example.com:1234
 ```
 
 [Back to TOC](#table-of-contents)
@@ -135,6 +200,12 @@ the Phantun Server to connect.
 
 ```
 RUST_LOG=info /usr/local/bin/phantun_client --local 127.0.0.1:1234 --remote 10.0.0.1:4567
+```
+
+Or use host name with `--remote`:
+
+```
+RUST_LOG=info /usr/local/bin/phantun_client --local 127.0.0.1:1234 --remote example.com:4567
 ```
 
 [Back to TOC](#table-of-contents)
@@ -163,18 +234,13 @@ of obfuscation.
 For people who use Phantun to tunnel [WireGuard®](https://www.wireguard.com) UDP packets, here are some guidelines on figuring
 out the correct MTU to use for your WireGuard interface.
 
-WireGuard MTU = `MAX_OF_16`(Interface MTU - IP header (20 bytes) - TCP header (20 bytes) - WireGuard overhead (32 bytes))
-
-Where:
-
-`MAX_OF_16` takes an input integer and calculates the maximum multiple of 16 not exceeding the input. This
-is needed because WireGuard will always pad it's payloads to multiple of 16 bytes.
+WireGuard MTU = Interface MTU - IP header (20 bytes) - TCP header (20 bytes) - WireGuard overhead (32 bytes)
 
 For example, for a Ethernet interface with 1500 bytes MTU, the WireGuard interface MTU should be set as:
 
-`MAX_OF_16`(1500 - 20 - 20 - 32) = 1424 bytes
+1500 - 20 - 20 - 32 = 1428 bytes
 
-The resulted Phantun TCP data packet will be 1424 + 20 + 20 + 32 = 1496 bytes which does not exceed the
+The resulted Phantun TCP data packet will be 1500 bytes which does not exceed the
 interface MTU of 1500.
 
 [Back to TOC](#table-of-contents)
@@ -200,9 +266,9 @@ for tunneling TCP/UDP traffic between two test instances and MTU has been tuned 
 
 # Future plans
 
-* IPv6 support
+* IPv6 support for fake-tcp
 * Load balancing a single UDP stream into multiple TCP streams
-* Iteration tests
+* Integration tests
 * Auto insertion/removal of required firewall rules
 
 [Back to TOC](#table-of-contents)
@@ -210,7 +276,7 @@ for tunneling TCP/UDP traffic between two test instances and MTU has been tuned 
 # Compariation to udp2raw
 [udp2raw](https://github.com/wangyu-/udp2raw-tunnel) is another popular project by [@wangyu-](https://github.com/wangyu-)
 that is very similar to what Phantun can do. In fact I took inspirations of Phantun from udp2raw. The biggest reason for
-developing Phanton is because of lack of performance when running udp2raw (especially on multi-core systems such as Raspberry Pi).
+developing Phantun is because of lack of performance when running udp2raw (especially on multi-core systems such as Raspberry Pi).
 However, the goal is never to be as feature complete as udp2raw and only support the most common use cases. Most notably, UDP over ICMP
 and UDP over UDP mode are not supported and there is no anti-replay nor encryption support. The benefit of this is much better
 performance overall and less MTU overhead because lack of additional headers inside the TCP payload.
@@ -228,7 +294,7 @@ Here is a quick overview of comparison between those two to help you choose:
 | Tunneling MTU overhead                           |    12 bytes   |      44 bytes     |
 | Seprate TCP connections for each UDP connection  | Client/Server |    Server only    |
 | Anti-replay, encryption                          |       ❌       |         ✅         |
-| IPv6                                             |    Planned    |         ✅         |
+| IPv6                                             |    UDP only    |         ✅         |
 
 [Back to TOC](#table-of-contents)
 
